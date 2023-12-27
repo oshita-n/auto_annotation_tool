@@ -5,6 +5,9 @@ import torch
 from PIL import Image
 import numpy as np
 from io import BytesIO, BufferedReader
+from ultralytics import YOLO
+import cv2
+import pandas as pd
 
 # モデルとプロセッサのロード（グローバルに一度だけロード）
 processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
@@ -62,15 +65,12 @@ def main():
         # ラベル入力
         label = st.text_input(f"{uploaded_file.name}のラベル", key=uploaded_file)
 
-        if label != "":
-            # ラベル表示（CSSを使用してデザインをカスタマイズ）
-            st.markdown(f"<div style='background-color:#4CAF50; color:white; padding:10px;'>{label}</div>", unsafe_allow_html=True)
-
         # runボタンを設置
-        run = st.button("Run")
+        segmentation_run = st.button("segmentation")
+        detection_run = st.button("detection")
 
         # runボタンが押されたらモデルを実行
-        if run:
+        if segmentation_run:
             input_image = Image.open(uploaded_file)
             preds = process(input_image, label)
             anno_img = process_without_blend(input_image, label)
@@ -78,7 +78,39 @@ def main():
 
             # アノテーションをダウンロードするボタンを設置
             btn = st.download_button("アノテーション画像をダウンロードする", data=get_image_download_binary(anno_img), file_name=f"{uploaded_file.name}_annotation.jpg", mime="image/png")
-                
+        elif detection_run:
+            model = YOLO('yolov8n.pt')
+            img = Image.open(uploaded_file)
+            results = model.predict(img)
+            # インデックスとクラスの辞書を取得
+            class_name_dict = model.names
+            
+            annotation_class = [k for k, v in class_name_dict.items() if v == label][0]
+
+
+            print(f"boxの中身: {results[0].boxes.xyxy}")
+            detection_boxes = []
+            # 対象のBBoxを抽出
+            for i, cls in enumerate(results[0].boxes.cls):
+                if cls == annotation_class:
+                    detection_boxes.append(results[0].boxes.xyxy[i].tolist())
+            # アノテーションのcsvを作成
+            # カラムはlabel, xmin, ymin, xmax, ymax
+            anno_csv = pd.DataFrame(columns=["class", "xmin", "ymin", "xmax", "ymax"])
+            anno_csv["class"] = [label] * len(detection_boxes)
+            anno_csv[["xmin", "ymin", "xmax", "ymax"]] = detection_boxes
+            # BBoxを描画
+            if len(detection_boxes) > 0:
+                for box in detection_boxes:
+                    img = cv2.rectangle(np.array(img), (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 0, 255), 3)
+                img = Image.fromarray(img)
+                st.image(img, caption="予測結果")
+                # アノテーションのcsvをダウンロードするボタンを設置
+                btn = st.download_button("アノテーションをダウンロードする", data=anno_csv.to_csv(index=False), file_name=f"{uploaded_file.name}_annotation.csv", mime="text/csv")
+            else:
+                st.write("ラベルが見つかりませんでした。")            
+
+
     # フッター
     st.markdown(
         """
