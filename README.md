@@ -1,6 +1,6 @@
 ## Auto annotation tool
 
-<img src="./img/sample.mp4" width="680" />
+<img src="./img/sample.gif" width="680" />
 
 ### How to use
 ```bash
