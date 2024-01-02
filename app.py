@@ -8,6 +8,9 @@ from io import BytesIO, BufferedReader
 from ultralytics import YOLO
 import cv2
 import pandas as pd
+import zipfile
+import shutil
+import os
 
 # モデルとプロセッサのロード（グローバルに一度だけロード）
 processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
@@ -54,16 +57,13 @@ def main():
     # Streamlitアプリのタイトル
     st.title("Auto Annotation App")
 
-    # 画像アップロード
-    uploaded_file = st.file_uploader("画像をアップロード", type=["png", "jpg", "jpeg"])
-    # プレビューを小さく表示
-    if uploaded_file:
-        st.image(uploaded_file, width=200)
+    # 画像アップロード(複数の画像のアップロードを許可)
+    uploaded_files = st.file_uploader("画像をアップロード", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
     # アップロードされた画像ごとにラベル入力
-    if uploaded_file:
+    if uploaded_files is not None:
         # ラベル入力
-        label = st.text_input(f"{uploaded_file.name}のラベル", key=uploaded_file)
+        label = st.text_input("ラベルを入力してください")
 
         # runボタンを設置
         segmentation_run = st.button("segmentation")
@@ -71,13 +71,48 @@ def main():
 
         # runボタンが押されたらモデルを実行
         if segmentation_run:
-            input_image = Image.open(uploaded_file)
-            preds = process(input_image, label)
-            anno_img = process_without_blend(input_image, label)
-            st.image(preds, caption="予測結果")
+            # 画像を読み込み推論する
+            # 最終的にzipにしてダウンロードできるようにする
+            if not os.path.exists("tmp"):
+                os.mkdir("tmp")
+            else:
+                # すでにtmpフォルダがある場合は削除して再作成
+                shutil.rmtree("tmp")
+                os.mkdir("tmp")
+                
+            if not os.path.exists("tmp/annotation"):
+                os.mkdir("tmp/annotation")
+            if not os.path.exists("tmp/inputs"):
+                os.mkdir("tmp/inputs")
+            if not os.path.exists("tmp/preds"):
+                os.mkdir("tmp/preds")
+            if not os.path.exists("tmp/no_annotation"):
+                os.mkdir("tmp/no_annotation")
 
+            # 検出レポートを作成する
+            csv_data = "detection,no_detection\n"
+
+            for uploaded_file in uploaded_files:
+                input_image = Image.open(uploaded_file)
+                preds = process(input_image, label)
+                anno_img = process_without_blend(input_image, label)
+                anno_img = Image.fromarray(np.array(anno_img))
+                input_image.save(f"tmp/inputs/{uploaded_file.name}")
+                # アノテーションがない場合はno_annotationフォルダにコピー
+                if np.sum(np.array(anno_img)) == 0:
+                    shutil.copy(f"tmp/inputs/{uploaded_file.name}", f"tmp/no_annotation/{uploaded_file.name}")
+                    csv_data += f",{uploaded_file.name}\n"
+                else:
+                    # アノテーションがある場合はannotationフォルダにコピー
+                    anno_img.save(f"tmp/annotation/{uploaded_file.name}.jpg")
+                    csv_data += f"{uploaded_file.name},\n"
+                preds.save(f"tmp/preds/{uploaded_file.name}.jpg")
+            # レポートを作成
+            with open("tmp/report.csv", "w") as f:
+                f.write(csv_data)
+            shutil.make_archive("annotation", 'zip', root_dir="tmp")
             # アノテーションをダウンロードするボタンを設置
-            btn = st.download_button("アノテーション画像をダウンロードする", data=get_image_download_binary(anno_img), file_name=f"{uploaded_file.name}_annotation.jpg", mime="image/png")
+            btn = st.download_button("アノテーション画像をzipにまとめてダウンロードする", data=open("annotation.zip", "rb"), file_name="annotation.zip", mime="application/zip")
         elif detection_run:
             model = YOLO('yolov8n.pt')
             img = Image.open(uploaded_file)
