@@ -104,9 +104,9 @@ def main():
                     csv_data += f",{uploaded_file.name}\n"
                 else:
                     # アノテーションがある場合はannotationフォルダにコピー
-                    anno_img.save(f"tmp/annotation/{uploaded_file.name}.jpg")
+                    anno_img.save(f"tmp/annotation/{uploaded_file.name}")
                     csv_data += f"{uploaded_file.name},\n"
-                preds.save(f"tmp/preds/{uploaded_file.name}.jpg")
+                preds.save(f"tmp/preds/{uploaded_file.name}")
             # レポートを作成
             with open("tmp/report.csv", "w") as f:
                 f.write(csv_data)
@@ -115,37 +115,77 @@ def main():
             btn = st.download_button("アノテーション画像をzipにまとめてダウンロードする", data=open("annotation.zip", "rb"), file_name="annotation.zip", mime="application/zip")
         elif detection_run:
             model = YOLO('yolov8n.pt')
-            img = Image.open(uploaded_file)
-            results = model.predict(img)
-            # インデックスとクラスの辞書を取得
-            class_name_dict = model.names
-            
-            annotation_class = [k for k, v in class_name_dict.items() if v == label][0]
 
-
-            print(f"boxの中身: {results[0].boxes.xyxy}")
-            detection_boxes = []
-            # 対象のBBoxを抽出
-            for i, cls in enumerate(results[0].boxes.cls):
-                if cls == annotation_class:
-                    detection_boxes.append(results[0].boxes.xyxy[i].tolist())
-            # アノテーションのcsvを作成
-            # カラムはlabel, xmin, ymin, xmax, ymax
-            anno_csv = pd.DataFrame(columns=["class", "xmin", "ymin", "xmax", "ymax"])
-            anno_csv["class"] = [label] * len(detection_boxes)
-            anno_csv[["xmin", "ymin", "xmax", "ymax"]] = detection_boxes
-            # BBoxを描画
-            if len(detection_boxes) > 0:
-                for box in detection_boxes:
-                    img = cv2.rectangle(np.array(img), (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 0, 255), 3)
-                img = Image.fromarray(img)
-                st.image(img, caption="予測結果")
-                # アノテーションのcsvをダウンロードするボタンを設置
-                btn = st.download_button("アノテーションをダウンロードする", data=anno_csv.to_csv(index=False), file_name=f"{uploaded_file.name}_annotation.csv", mime="text/csv")
+            # 画像を読み込み推論する
+            # 最終的にzipにしてダウンロードできるようにする
+            if not os.path.exists("tmp"):
+                os.mkdir("tmp")
             else:
-                st.write("ラベルが見つかりませんでした。")            
+                # すでにtmpフォルダがある場合は削除して再作成
+                shutil.rmtree("tmp")
+                os.mkdir("tmp")
+                
+            if not os.path.exists("tmp/annotation"):
+                os.mkdir("tmp/annotation")
+            if not os.path.exists("tmp/inputs"):
+                os.mkdir("tmp/inputs")
+            if not os.path.exists("tmp/preds"):
+                os.mkdir("tmp/preds")
+            if not os.path.exists("tmp/no_annotation"):
+                os.mkdir("tmp/no_annotation")
+
+            # 検出レポートを作成する
+            csv_data = "detection,no_detection\n"
+            for uploaded_file in uploaded_files:
+                img = Image.open(uploaded_file)
+                results = model.predict(img)
+                # インデックスとクラスの辞書を取得
+                class_name_dict = model.names
+                
+                annotation_class = [k for k, v in class_name_dict.items() if v == label][0]
 
 
+                print(f"boxの中身: {results[0].boxes.xyxy}")
+                detection_boxes = []
+                # 対象のBBoxを抽出
+                for i, cls in enumerate(results[0].boxes.cls):
+                    if cls == annotation_class:
+                        detection_boxes.append(results[0].boxes.xyxy[i].tolist())
+                # アノテーションのcsvを作成
+                # カラムはlabel, xmin, ymin, xmax, ymax
+                anno_csv = pd.DataFrame(columns=["class", "xmin", "ymin", "xmax", "ymax"])
+                anno_csv["class"] = [label] * len(detection_boxes)
+                print(f"boxの中身: {detection_boxes}")
+                if len(detection_boxes) > 0:
+                    anno_csv[["xmin", "ymin", "xmax", "ymax"]] = detection_boxes
+                # アノテーションのcsvを保存
+                anno_csv.to_csv(f"tmp/annotation/{os.path.splitext(uploaded_file.name)[0]}.csv", index=False)
+
+                # BBoxを描画
+                if len(detection_boxes) > 0:
+                    for box in detection_boxes:
+                        img = cv2.rectangle(np.array(img), (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 0, 255), 3)
+                    img = Image.fromarray(img)
+                else:
+                    img = Image.fromarray(np.array(img))
+                input_image = Image.open(uploaded_file)
+                input_image.save(f"tmp/inputs/{uploaded_file.name}")
+                # アノテーションがない場合はno_annotationフォルダにコピー
+                if len(detection_boxes) == 0:
+                    shutil.copy(f"tmp/inputs/{uploaded_file.name}", f"tmp/no_annotation/{uploaded_file.name}")
+                    csv_data += f",{uploaded_file.name}\n"
+                else:
+                    # アノテーションがある場合はannotationフォルダにコピー
+                    img.save(f"tmp/annotation/{uploaded_file.name}")
+                    csv_data += f"{uploaded_file.name},\n"
+                img.save(f"tmp/preds/{uploaded_file.name}")
+            # レポートを作成
+            with open("tmp/report.csv", "w") as f:
+                f.write(csv_data)
+            shutil.make_archive("annotation", 'zip', root_dir="tmp")
+            # アノテーションをダウンロードするボタンを設置
+            btn = st.download_button("アノテーション画像をzipにまとめてダウンロードする", data=open("annotation.zip", "rb"), file_name="annotation.zip", mime="application/zip")                    
+        
     # フッター
     st.markdown(
         """
