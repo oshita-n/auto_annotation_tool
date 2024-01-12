@@ -16,36 +16,70 @@ import os
 processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
 model = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined")
 
-def process(input_image, prompt):
-    inputs = processor(text=prompt, images=input_image, padding="max_length", return_tensors="pt")
-    # predict
-    with torch.no_grad():
+# 複数のプロンプトからマスク画像を作成して、最終的に複数クラスのマスク画像をブレンドする
+def process(input_image, prompts, colors):
+    # プロンプトからマスク画像を作成
+    mask_images = []
+    for i, prompt in enumerate(prompts):
+        # プロンプトからマスク画像を作成
+        inputs = processor(text=prompt, images=input_image, return_tensors="pt", padding="max_length")
         outputs = model(**inputs)
-    preds = torch.sigmoid(outputs.logits).squeeze().detach().cpu().numpy()
-    preds = np.where(preds > 0.3, 1, 0).astype(np.uint8)
-    preds = Image.fromarray(preds.astype(np.uint8))
-    preds = np.array(preds.resize((input_image.width, input_image.height)))
-    
-    # 推論結果の赤色のマスクを作成
-    masked_image = np.array(input_image)
-    masked_image[preds==1] = [255, 0, 0]
-    masked_image = Image.fromarray(masked_image)
-    # 元の画像にマスクを重ねる
-    masked_image = Image.blend(input_image, masked_image, 0.5)
-    return masked_image
+        preds = torch.sigmoid(outputs.logits).squeeze().detach().cpu().numpy()
+        preds = np.where(preds > 0.3, 1, 0).astype(np.uint8)
+        preds = Image.fromarray(preds.astype(np.uint8))
+        preds = np.array(preds.resize((input_image.width, input_image.height)))
+        preds = preds * 255
+        # チャンネルを3にする
+        preds = np.repeat(preds[:, :, np.newaxis], 3, axis=2)
+        # 白い部分を任意のカラーに変換
+        preds[:, :, 0] = np.where(preds[:, :, 0] == 255, colors[i][0], preds[:, :, 0])
+        preds[:, :, 1] = np.where(preds[:, :, 1] == 255, colors[i][1], preds[:, :, 1])
+        preds[:, :, 2] = np.where(preds[:, :, 2] == 255, colors[i][2], preds[:, :, 2])
+        preds = Image.fromarray(preds.astype(np.uint8))
+        mask_images.append(preds)
 
-def process_without_blend(input_image, prompt):
-    inputs = processor(text=prompt, images=input_image, padding="max_length", return_tensors="pt")
-    # predict
-    with torch.no_grad():
+    # 画像を重ねていくが、重なった部分は最後に重ねたクラスの色にする
+    all_mask_image = Image.new("RGB", (input_image.width, input_image.height))
+    all_mask_image = np.array(all_mask_image)
+    for i, mask in enumerate(mask_images):
+        all_mask_image = np.where(np.array(mask) != 0, np.array(mask), all_mask_image)
+
+    all_mask_image = Image.fromarray(all_mask_image.astype(np.uint8))
+    # 元の画像にマスクを重ねる
+    all_mask_image = Image.blend(input_image, all_mask_image, 0.5)
+    return all_mask_image
+
+# クラスごとにカラーで領域を塗りつぶし、最終的に複数クラスのカラーを合わせる
+def process_without_blend(input_image, prompts, colors):
+    width, height = input_image.size
+    # プロンプトからクラスマップ画像を作成
+    class_maps = []
+    for i, prompt in enumerate(prompts):
+        # プロンプトからマスク画像を作成
+        inputs = processor(text=prompt, images=input_image, return_tensors="pt", padding="max_length")
         outputs = model(**inputs)
-    preds = torch.sigmoid(outputs.logits).squeeze().detach().cpu().numpy()
-    preds = np.where(preds > 0.3, 1, 0).astype(np.uint8)
-    preds = Image.fromarray(preds.astype(np.uint8))
-    preds = np.array(preds.resize((input_image.width, input_image.height)))
-    preds = preds * 255
-    preds = Image.fromarray(preds.astype(np.uint8))
-    return preds
+        preds = torch.sigmoid(outputs.logits).squeeze().detach().cpu().numpy()
+        preds = np.where(preds > 0.3, 1, 0).astype(np.uint8)
+        preds = Image.fromarray(preds.astype(np.uint8))
+        preds = np.array(preds.resize((width, height)))
+        preds = preds * 255
+        # チャンネルを3にする
+        preds = np.repeat(np.array(preds)[:, :, np.newaxis], 3, axis=2)
+        # 白い部分を任意のカラーに変換
+        preds[:, :, 0] = np.where(preds[:, :, 0] == 255, colors[i][0], preds[:, :, 0])
+        preds[:, :, 1] = np.where(preds[:, :, 1] == 255, colors[i][1], preds[:, :, 1])
+        preds[:, :, 2] = np.where(preds[:, :, 2] == 255, colors[i][2], preds[:, :, 2])
+        preds = Image.fromarray(preds.astype(np.uint8))
+        class_maps.append(preds)
+
+    # 画像を重ねていくが、重なった部分は最後に重ねたクラスの色にする
+    all_class_map = Image.new("RGB", (width, height))
+    all_class_map = np.array(all_class_map)
+    for i, class_map in enumerate(class_maps):
+        all_class_map = np.where(np.array(class_map) != 0, np.array(class_map), all_class_map)
+    all_class_map = Image.fromarray(all_class_map.astype(np.uint8))
+    return all_class_map
+
 
 def get_image_download_binary(img):
     buffered = BytesIO()
@@ -63,7 +97,7 @@ def main():
     # アップロードされた画像ごとにラベル入力
     if uploaded_files is not None:
         # ラベル入力
-        label = st.text_input("ラベルを入力してください")
+        label = st.text_input("ラベルを入力してください。複数の場合はカンマ区切りで入力してください。")
 
         # runボタンを設置
         segmentation_run = st.button("segmentation")
@@ -94,9 +128,11 @@ def main():
 
             for uploaded_file in uploaded_files:
                 input_image = Image.open(uploaded_file)
-                preds = process(input_image, label)
-                anno_img = process_without_blend(input_image, label)
-                anno_img = Image.fromarray(np.array(anno_img))
+                labels = label.split(",")
+                colors = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [0, 255, 255], [255, 0, 255]]
+                preds = process(input_image, labels, colors)
+                anno_img = process_without_blend(input_image, labels, colors)
+
                 input_image.save(f"tmp/inputs/{uploaded_file.name}")
                 # アノテーションがない場合はno_annotationフォルダにコピー
                 if np.sum(np.array(anno_img)) == 0:
@@ -143,7 +179,6 @@ def main():
                 class_name_dict = model.names
                 
                 annotation_class = [k for k, v in class_name_dict.items() if v == label][0]
-
 
                 print(f"boxの中身: {results[0].boxes.xyxy}")
                 detection_boxes = []
